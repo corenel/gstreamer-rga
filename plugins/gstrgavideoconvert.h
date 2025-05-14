@@ -25,22 +25,24 @@
 
 G_BEGIN_DECLS
 
-#define GST_TYPE_RGA_CONVERT (gst_rga_video_convert_get_type())
-#define gst_rga_video_convert(obj) \
-  (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_RGA_CONVERT, GstRgaVideoConvert))
-#define gst_rga_video_convert_CLASS(klass)                \
-  (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_RGA_CONVERT, \
+#define GST_TYPE_RGA_VIDEO_CONVERT (gst_rga_video_convert_get_type())
+#define gst_rga_video_convert(obj)                               \
+  (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_RGA_VIDEO_CONVERT, \
+                              GstRgaVideoConvert))
+#define gst_rga_video_convert_CLASS(klass)                      \
+  (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_RGA_VIDEO_CONVERT, \
                            GstRgaVideoConvertClass))
-#define GST_IS_RGA_CONVERT(obj) \
-  (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_RGA_CONVERT))
-#define GST_IS_RGA_CONVERT_CLASS(obj) \
-  (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_RGA_CONVERT))
+#define GST_IS_RGA_VIDEO_CONVERT(obj) \
+  (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_RGA_VIDEO_CONVERT))
+#define GST_IS_RGA_VIDEO_CONVERT_CLASS(obj) \
+  (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_RGA_VIDEO_CONVERT))
 
 typedef struct _GstRgaVideoConvert GstRgaVideoConvert;
 typedef struct _GstRgaVideoConvertClass GstRgaVideoConvertClass;
 
 struct _GstRgaVideoConvert {
   GstVideoFilter base_rgavideoconvert;
+  guint32 core_mask;
 };
 
 struct _GstRgaVideoConvertClass {

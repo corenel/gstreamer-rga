@@ -93,6 +93,16 @@ static GstFlowReturn gst_rga_video_convert_transform_frame(
   "height = (int) [ 1, 8192 ] ,"                                               \
   "framerate = (fraction) [ 0, max ]"
 
+/* element properties */
+
+typedef enum {
+  GST_RGA_PROP_0,
+  GST_RGA_PROP_CORE_MASK,
+  GST_RGA_PROP_LAST
+} GstRgaProp;
+
+static GParamSpec *rga_props[GST_RGA_PROP_LAST];
+
 /* class initialization */
 
 G_DEFINE_TYPE_WITH_CODE(
@@ -100,6 +110,14 @@ G_DEFINE_TYPE_WITH_CODE(
     GST_DEBUG_CATEGORY_INIT(gst_rga_video_convert_debug_category,
                             "rgavideoconvert", 0,
                             "video Colorspace conversion & scaler"));
+
+static void gst_rga_video_convert_set_property(GObject *object, guint prop_id,
+                                               const GValue *value,
+                                               GParamSpec *pspec);
+
+static void gst_rga_video_convert_get_property(GObject *object, guint prop_id,
+                                               GValue *value,
+                                               GParamSpec *pspec);
 
 static void gst_rga_video_convert_class_init(GstRgaVideoConvertClass *klass) {
   GObjectClass *gobject_class = G_OBJECT_CLASS(klass);
@@ -122,6 +140,27 @@ static void gst_rga_video_convert_class_init(GstRgaVideoConvertClass *klass) {
       "Converts video from one colorspace to another & Resizes via Rockchip "
       "RGA",
       "http://github.com/corenel/gstreamer-rga");
+
+  /* element properties */
+  static const GFlagsValue mask_values[] = {
+      {IM_SCHEDULER_RGA3_DEFAULT, "auto", "auto"},
+      {IM_SCHEDULER_RGA3_CORE0, "rga3_core0", "rga3_core0"},
+      {IM_SCHEDULER_RGA3_CORE1, "rga3_core1", "rga3_core1"},
+      {IM_SCHEDULER_RGA2_CORE0, "rga2_core0", "rga2_core0"},
+      {IM_SCHEDULER_RGA3_CORE0 | IM_SCHEDULER_RGA3_CORE1, "rga3", "rga3"},
+      {IM_SCHEDULER_RGA2_CORE0, "rga2", "rga2"},
+      {0, NULL, NULL}};
+  GType mask_type = g_flags_register_static("GstRgaCoreMask", mask_values);
+
+  rga_props[GST_RGA_PROP_CORE_MASK] = g_param_spec_flags(
+      "core-mask", "Core mask", "Select which RGA core(s) to use (bit-mask)",
+      mask_type, IM_SCHEDULER_RGA3_DEFAULT, /* default == auto */
+      G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
+
+  gobject_class->set_property = gst_rga_video_convert_set_property;
+  gobject_class->get_property = gst_rga_video_convert_get_property;
+  g_object_class_install_property(gobject_class, GST_RGA_PROP_CORE_MASK,
+                                  rga_props[GST_RGA_PROP_CORE_MASK]);
 
   base_transform_class->passthrough_on_same_caps = TRUE;
 
@@ -304,6 +343,32 @@ static GstCaps *gst_rga_video_convert_transform_caps(GstBaseTransform *trans,
   return ret;
 }
 
+static void gst_rga_video_convert_set_property(GObject *object, guint prop_id,
+                                               const GValue *value,
+                                               GParamSpec *pspec) {
+  GstRgaVideoConvert *rgavideoconvert = gst_rga_video_convert(object);
+  switch (prop_id) {
+    case GST_RGA_PROP_CORE_MASK:
+      rgavideoconvert->core_mask = g_value_get_flags(value);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
+  }
+}
+
+static void gst_rga_video_convert_get_property(GObject *object, guint prop_id,
+                                               GValue *value,
+                                               GParamSpec *pspec) {
+  GstRgaVideoConvert *rgavideoconvert = gst_rga_video_convert(object);
+  switch (prop_id) {
+    case GST_RGA_PROP_CORE_MASK:
+      g_value_set_flags(value, rgavideoconvert->core_mask);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, prop_id, pspec);
+  }
+}
+
 static void gst_rga_video_convert_init(GstRgaVideoConvert *rgavideoconvert) {}
 
 static gboolean gst_rga_video_convert_start(GstBaseTransform *trans) {
@@ -311,9 +376,9 @@ static gboolean gst_rga_video_convert_start(GstBaseTransform *trans) {
 
   GST_DEBUG_OBJECT(rgavideoconvert, "start");
   c_RkRgaInit();
-  // Only use RGA3_CORE0 and RGA3_CORE1 (i.e. ignore RGA2 to avoid DMA32 issues)
-  imconfig(IM_CONFIG_SCHEDULER_CORE,
-           IM_SCHEDULER_RGA3_CORE0 | IM_SCHEDULER_RGA3_CORE1);
+  if (rgavideoconvert->core_mask) {
+    imconfig(IM_CONFIG_SCHEDULER_CORE, rgavideoconvert->core_mask);
+  }
   return TRUE;
 }
 
@@ -375,9 +440,7 @@ static GstFlowReturn gst_rga_video_convert_transform_frame(
     return GST_FLOW_ERROR;
 
   gboolean ret = TRUE;
-  // Only use RGA3_CORE0 and RGA3_CORE1 (i.e. ignore RGA2 to avoid DMA32 issues)
-  src_info.core = dst_info.core =
-      IM_SCHEDULER_RGA3_CORE0 | IM_SCHEDULER_RGA3_CORE1;
+  src_info.core = dst_info.core = rgavideoconvert->core_mask;
   if (c_RkRgaBlit(&src_info, &dst_info, NULL) < 0) {
     GST_WARNING_OBJECT(filter, "failed to blit");
     ret = FALSE;
@@ -397,7 +460,7 @@ static gboolean plugin_init(GstPlugin *plugin) {
   /* FIXME Remember to set the rank if it's an element that is meant
    to be autoplugged by decodebin. */
   return gst_element_register(plugin, "rgavideoconvert", GST_RANK_PRIMARY,
-                              GST_TYPE_RGA_CONVERT);
+                              GST_TYPE_RGA_VIDEO_CONVERT);
 }
 
 #ifndef VERSION
@@ -415,4 +478,4 @@ static gboolean plugin_init(GstPlugin *plugin) {
 
 GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, rgavideoconvert,
                   "video Colorspace conversion & scaler", plugin_init, VERSION,
-                  "MIT", PACKAGE_NAME, GST_PACKAGE_ORIGIN)
+                  "MIT/X11", PACKAGE_NAME, GST_PACKAGE_ORIGIN)
