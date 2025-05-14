@@ -31,6 +31,9 @@ gst_dep = dependency('gstreamer-1.0', version : gst_req,
   fallback : ['gstreamer', 'gst_dep'])
 gst_base_dep = dependency('gstreamer-base-1.0', version : gst_req,
   fallback : ['gstreamer', 'gst_base_dep'])
+rga_dep = dependency('librga')
+gst_video_dep = dependency('gstreamer-video-1.0')
+gst_allocators_dep = dependency('gstreamer-allocators-1.0')
 
 # Set the directory where plugins should be installed.
 #
@@ -43,6 +46,6 @@ else
   plugins_install_dir = '@0@/gstreamer-1.0'.format(get_option('libdir'))
 endif
 
-plugin_deps = [gst_dep, gst_base_dep]
+plugin_deps = [gst_dep, gst_base_dep, rga_dep, gst_video_dep, gst_allocators_dep]
 
 subdir('plugins')
