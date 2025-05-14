@@ -24,461 +24,388 @@
  * <refsect2>
  * <title>Example launch line</title>
  * |[
- * gst-launch-1.0 -v fakesrc ! rgavideoconvert ! FIXME ! fakesink
+ * gst-launch-1.0 -v fakesrc ! video/x-raw,format=NV12,width=1920,height=1080 !
+ * rgavideoconvert ! video/x-raw,format=RGBA,width=640,height=480 ! fakesink
  * ]|
- * FIXME Describe what the pipeline does.
+ * convert 1920x1080 ---> 640x480 and NV12 ---> RGBA .
  * </refsect2>
  */
 
+#include "gst/gstpluginfeature.h"
 #ifdef HAVE_CONFIG_H
 #include "config.h"  // NOLINT
 #endif
 
-#include <gst/base/gstbasetransform.h>
+#include <gst/allocators/gstdmabuf.h>
 #include <gst/gst.h>
+#include <gst/video/gstvideofilter.h>
+#include <gst/video/video.h>
 
 #include "gstrgavideoconvert.h"  // NOLINT
+#include "rga/RgaApi.h"
 
-GST_DEBUG_CATEGORY_STATIC(gst_rgavideoconvert_debug_category);
-#define GST_CAT_DEFAULT gst_rgavideoconvert_debug_category
+GST_DEBUG_CATEGORY_STATIC(gst_rga_video_convert_debug_category);
+#define GST_CAT_DEFAULT gst_rga_video_convert_debug_category
+
+#define GST_CASE_RETURN(a, b) \
+  case a:                     \
+    return b
 
 /* prototypes */
 
-static void gst_rgavideoconvert_set_property(GObject *object, guint property_id,
-                                             const GValue *value,
-                                             GParamSpec *pspec);
-static void gst_rgavideoconvert_get_property(GObject *object, guint property_id,
-                                             GValue *value, GParamSpec *pspec);
-static void gst_rgavideoconvert_dispose(GObject *object);
-static void gst_rgavideoconvert_finalize(GObject *object);
+static gboolean gst_rga_video_convert_start(GstBaseTransform *trans);
+static gboolean gst_rga_video_convert_stop(GstBaseTransform *trans);
 
-static GstCaps *gst_rgavideoconvert_transform_caps(GstBaseTransform *trans,
-                                                   GstPadDirection direction,
-                                                   GstCaps *caps,
-                                                   GstCaps *filter);
-static GstCaps *gst_rgavideoconvert_fixate_caps(GstBaseTransform *trans,
-                                                GstPadDirection direction,
-                                                GstCaps *caps,
-                                                GstCaps *othercaps);
-static gboolean gst_rgavideoconvert_accept_caps(GstBaseTransform *trans,
-                                                GstPadDirection direction,
-                                                GstCaps *caps);
-static gboolean gst_rgavideoconvert_set_caps(GstBaseTransform *trans,
-                                             GstCaps *incaps, GstCaps *outcaps);
-static gboolean gst_rgavideoconvert_query(GstBaseTransform *trans,
-                                          GstPadDirection direction,
-                                          GstQuery *query);
-static gboolean gst_rgavideoconvert_decide_allocation(GstBaseTransform *trans,
-                                                      GstQuery *query);
-static gboolean gst_rgavideoconvert_filter_meta(GstBaseTransform *trans,
-                                                GstQuery *query, GType api,
-                                                const GstStructure *params);
-static gboolean gst_rgavideoconvert_propose_allocation(GstBaseTransform *trans,
-                                                       GstQuery *decide_query,
-                                                       GstQuery *query);
-static gboolean gst_rgavideoconvert_transform_size(GstBaseTransform *trans,
-                                                   GstPadDirection direction,
-                                                   GstCaps *caps, gsize size,
-                                                   GstCaps *othercaps,
-                                                   gsize *othersize);
-static gboolean gst_rgavideoconvert_get_unit_size(GstBaseTransform *trans,
-                                                  GstCaps *caps, gsize *size);
-static gboolean gst_rgavideoconvert_start(GstBaseTransform *trans);
-static gboolean gst_rgavideoconvert_stop(GstBaseTransform *trans);
-static gboolean gst_rgavideoconvert_sink_event(GstBaseTransform *trans,
-                                               GstEvent *event);
-static gboolean gst_rgavideoconvert_src_event(GstBaseTransform *trans,
-                                              GstEvent *event);
-static GstFlowReturn gst_rgavideoconvert_prepare_output_buffer(
-    GstBaseTransform *trans, GstBuffer *input, GstBuffer **outbuf);
-static gboolean gst_rgavideoconvert_copy_metadata(GstBaseTransform *trans,
-                                                  GstBuffer *input,
-                                                  GstBuffer *outbuf);
-static gboolean gst_rgavideoconvert_transform_meta(GstBaseTransform *trans,
-                                                   GstBuffer *outbuf,
-                                                   GstMeta *meta,
-                                                   GstBuffer *inbuf);
-static void gst_rgavideoconvert_before_transform(GstBaseTransform *trans,
-                                                 GstBuffer *buffer);
-static GstFlowReturn gst_rgavideoconvert_transform(GstBaseTransform *trans,
-                                                   GstBuffer *inbuf,
-                                                   GstBuffer *outbuf);
-static GstFlowReturn gst_rgavideoconvert_transform_ip(GstBaseTransform *trans,
-                                                      GstBuffer *buf);
+static GstCaps *gst_rga_video_convert_transform_caps(GstBaseTransform *trans,
+                                                     GstPadDirection direction,
+                                                     GstCaps *caps,
+                                                     GstCaps *filter);
 
-enum { PROP_0 };
+static gboolean gst_rga_video_convert_set_info(GstVideoFilter *filter,
+                                               GstCaps *incaps,
+                                               GstVideoInfo *in_info,
+                                               GstCaps *outcaps,
+                                               GstVideoInfo *out_info);
+
+static GstFlowReturn gst_rga_video_convert_transform_frame(
+    GstVideoFilter *filter, GstVideoFrame *inframe, GstVideoFrame *outframe);
 
 /* pad templates */
 
-static GstStaticPadTemplate gst_rgavideoconvert_src_template =
-    GST_STATIC_PAD_TEMPLATE("src", GST_PAD_SRC, GST_PAD_ALWAYS,
-                            GST_STATIC_CAPS("application/unknown"));
+#define VIDEO_SRC_CAPS                                                         \
+  "video/x-raw, "                                                              \
+  "format = (string) "                                                         \
+  "{ I420, YV12, NV12, NV21, Y42B, NV16, NV61, RGB16, RGB15, BGR, RGB, BGRA, " \
+  "RGBA, BGRx, RGBx }"                                                         \
+  ", "                                                                         \
+  "width = (int) [ 1, 4096 ] ,"                                                \
+  "height = (int) [ 1, 4096 ] ,"                                               \
+  "framerate = (fraction) [ 0, max ]"
 
-static GstStaticPadTemplate gst_rgavideoconvert_sink_template =
-    GST_STATIC_PAD_TEMPLATE("sink", GST_PAD_SINK, GST_PAD_ALWAYS,
-                            GST_STATIC_CAPS("application/unknown"));
+#define VIDEO_SINK_CAPS                                                        \
+  "video/x-raw, "                                                              \
+  "format = (string) "                                                         \
+  "{ I420, YV12, NV12, NV21, Y42B, NV16, NV61, RGB16, RGB15, BGR, RGB, BGRA, " \
+  "RGBA, BGRx, RGBx }"                                                         \
+  ", "                                                                         \
+  "width = (int) [ 1, 8192 ] ,"                                                \
+  "height = (int) [ 1, 8192 ] ,"                                               \
+  "framerate = (fraction) [ 0, max ]"
 
 /* class initialization */
 
 G_DEFINE_TYPE_WITH_CODE(
-    GstRgavideoconvert, gst_rgavideoconvert, GST_TYPE_BASE_TRANSFORM,
-    GST_DEBUG_CATEGORY_INIT(gst_rgavideoconvert_debug_category,
+    GstRgaVideoConvert, gst_rga_video_convert, GST_TYPE_VIDEO_FILTER,
+    GST_DEBUG_CATEGORY_INIT(gst_rga_video_convert_debug_category,
                             "rgavideoconvert", 0,
-                            "debug category for rgavideoconvert element"));
+                            "video Colorspace conversion & scaler"));
 
-static void gst_rgavideoconvert_class_init(GstRgavideoconvertClass *klass) {
+static void gst_rga_video_convert_class_init(GstRgaVideoConvertClass *klass) {
   GObjectClass *gobject_class = G_OBJECT_CLASS(klass);
   GstBaseTransformClass *base_transform_class = GST_BASE_TRANSFORM_CLASS(klass);
+  GstVideoFilterClass *video_filter_class = GST_VIDEO_FILTER_CLASS(klass);
 
   /* Setting up pads and setting metadata should be moved to
-     base_class_init if you intend to subclass this class. */
-  gst_element_class_add_static_pad_template(GST_ELEMENT_CLASS(klass),
-                                            &gst_rgavideoconvert_src_template);
-  gst_element_class_add_static_pad_template(GST_ELEMENT_CLASS(klass),
-                                            &gst_rgavideoconvert_sink_template);
+   base_class_init if you intend to subclass this class. */
+  gst_element_class_add_pad_template(
+      GST_ELEMENT_CLASS(klass),
+      gst_pad_template_new("src", GST_PAD_SRC, GST_PAD_ALWAYS,
+                           gst_caps_from_string(VIDEO_SRC_CAPS)));
+  gst_element_class_add_pad_template(
+      GST_ELEMENT_CLASS(klass),
+      gst_pad_template_new("sink", GST_PAD_SINK, GST_PAD_ALWAYS,
+                           gst_caps_from_string(VIDEO_SINK_CAPS)));
 
   gst_element_class_set_static_metadata(
-      GST_ELEMENT_CLASS(klass), "FIXME Long name", "Generic",
-      "FIXME Description", "FIXME <fixme@example.com>");
+      GST_ELEMENT_CLASS(klass), "RgaVidConv Plugin", "Generic",
+      "Converts video from one colorspace to another & Resizes via Rockchip "
+      "RGA",
+      "http://github.com/corenel/gstreamer-rga");
 
-  gobject_class->set_property = gst_rgavideoconvert_set_property;
-  gobject_class->get_property = gst_rgavideoconvert_get_property;
-  gobject_class->dispose = gst_rgavideoconvert_dispose;
-  gobject_class->finalize = gst_rgavideoconvert_finalize;
+  base_transform_class->passthrough_on_same_caps = TRUE;
+
   base_transform_class->transform_caps =
-      GST_DEBUG_FUNCPTR(gst_rgavideoconvert_transform_caps);
-  base_transform_class->fixate_caps =
-      GST_DEBUG_FUNCPTR(gst_rgavideoconvert_fixate_caps);
-  base_transform_class->accept_caps =
-      GST_DEBUG_FUNCPTR(gst_rgavideoconvert_accept_caps);
-  base_transform_class->set_caps =
-      GST_DEBUG_FUNCPTR(gst_rgavideoconvert_set_caps);
-  base_transform_class->query = GST_DEBUG_FUNCPTR(gst_rgavideoconvert_query);
-  base_transform_class->decide_allocation =
-      GST_DEBUG_FUNCPTR(gst_rgavideoconvert_decide_allocation);
-  base_transform_class->filter_meta =
-      GST_DEBUG_FUNCPTR(gst_rgavideoconvert_filter_meta);
-  base_transform_class->propose_allocation =
-      GST_DEBUG_FUNCPTR(gst_rgavideoconvert_propose_allocation);
-  base_transform_class->transform_size =
-      GST_DEBUG_FUNCPTR(gst_rgavideoconvert_transform_size);
-  base_transform_class->get_unit_size =
-      GST_DEBUG_FUNCPTR(gst_rgavideoconvert_get_unit_size);
-  base_transform_class->start = GST_DEBUG_FUNCPTR(gst_rgavideoconvert_start);
-  base_transform_class->stop = GST_DEBUG_FUNCPTR(gst_rgavideoconvert_stop);
-  base_transform_class->sink_event =
-      GST_DEBUG_FUNCPTR(gst_rgavideoconvert_sink_event);
-  base_transform_class->src_event =
-      GST_DEBUG_FUNCPTR(gst_rgavideoconvert_src_event);
-  base_transform_class->prepare_output_buffer =
-      GST_DEBUG_FUNCPTR(gst_rgavideoconvert_prepare_output_buffer);
-  base_transform_class->copy_metadata =
-      GST_DEBUG_FUNCPTR(gst_rgavideoconvert_copy_metadata);
-  base_transform_class->transform_meta =
-      GST_DEBUG_FUNCPTR(gst_rgavideoconvert_transform_meta);
-  base_transform_class->before_transform =
-      GST_DEBUG_FUNCPTR(gst_rgavideoconvert_before_transform);
-  base_transform_class->transform =
-      GST_DEBUG_FUNCPTR(gst_rgavideoconvert_transform);
-  base_transform_class->transform_ip =
-      GST_DEBUG_FUNCPTR(gst_rgavideoconvert_transform_ip);
+      GST_DEBUG_FUNCPTR(gst_rga_video_convert_transform_caps);
+
+  base_transform_class->start = GST_DEBUG_FUNCPTR(gst_rga_video_convert_start);
+  base_transform_class->stop = GST_DEBUG_FUNCPTR(gst_rga_video_convert_stop);
+  video_filter_class->set_info =
+      GST_DEBUG_FUNCPTR(gst_rga_video_convert_set_info);
+  video_filter_class->transform_frame =
+      GST_DEBUG_FUNCPTR(gst_rga_video_convert_transform_frame);
 }
 
-static void gst_rgavideoconvert_init(GstRgavideoconvert *rgavideoconvert) {}
-
-void gst_rgavideoconvert_set_property(GObject *object, guint property_id,
-                                      const GValue *value, GParamSpec *pspec) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(object);
-
-  GST_DEBUG_OBJECT(rgavideoconvert, "set_property");
-
-  switch (property_id) {
+static RgaSURF_FORMAT gst_gst_format_to_rga_format(GstVideoFormat format) {
+  switch (format) {
+    GST_CASE_RETURN(GST_VIDEO_FORMAT_I420, RK_FORMAT_YCbCr_420_P);
+    GST_CASE_RETURN(GST_VIDEO_FORMAT_YV12, RK_FORMAT_YCrCb_420_P);
+    GST_CASE_RETURN(GST_VIDEO_FORMAT_NV12, RK_FORMAT_YCbCr_420_SP);
+    GST_CASE_RETURN(GST_VIDEO_FORMAT_NV21, RK_FORMAT_YCrCb_420_SP);
+#ifdef HAVE_NV12_10LE40
+    GST_CASE_RETURN(GST_VIDEO_FORMAT_NV12_10LE40, RK_FORMAT_YCbCr_420_SP_10B);
+#endif
+    GST_CASE_RETURN(GST_VIDEO_FORMAT_Y42B, RK_FORMAT_YCbCr_422_P);
+    GST_CASE_RETURN(GST_VIDEO_FORMAT_NV16, RK_FORMAT_YCbCr_422_SP);
+    GST_CASE_RETURN(GST_VIDEO_FORMAT_NV61, RK_FORMAT_YCrCb_422_SP);
+    GST_CASE_RETURN(GST_VIDEO_FORMAT_RGB16, RK_FORMAT_RGB_565);
+    GST_CASE_RETURN(GST_VIDEO_FORMAT_RGB15, RK_FORMAT_RGBA_5551);
+    GST_CASE_RETURN(GST_VIDEO_FORMAT_BGR, RK_FORMAT_BGR_888);
+    GST_CASE_RETURN(GST_VIDEO_FORMAT_RGB, RK_FORMAT_RGB_888);
+    GST_CASE_RETURN(GST_VIDEO_FORMAT_BGRA, RK_FORMAT_BGRA_8888);
+    GST_CASE_RETURN(GST_VIDEO_FORMAT_RGBA, RK_FORMAT_RGBA_8888);
+    GST_CASE_RETURN(GST_VIDEO_FORMAT_BGRx, RK_FORMAT_BGRX_8888);
+    GST_CASE_RETURN(GST_VIDEO_FORMAT_RGBx, RK_FORMAT_RGBX_8888);
     default:
-      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, pspec);
-      break;
+      return RK_FORMAT_UNKNOWN;
   }
 }
 
-void gst_rgavideoconvert_get_property(GObject *object, guint property_id,
-                                      GValue *value, GParamSpec *pspec) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(object);
+static gboolean gst_set_rga_info(rga_info_t *info, RgaSURF_FORMAT format,
+                                 guint width, guint height, guint hstride,
+                                 guint vstride) {
+  gint pixel_stride;
 
-  GST_DEBUG_OBJECT(rgavideoconvert, "get_property");
-
-  switch (property_id) {
-    default:
-      G_OBJECT_WARN_INVALID_PROPERTY_ID(object, property_id, pspec);
+  switch (format) {
+    case RK_FORMAT_RGBX_8888:
+    case RK_FORMAT_BGRX_8888:
+    case RK_FORMAT_RGBA_8888:
+    case RK_FORMAT_BGRA_8888:
+      pixel_stride = 4;
       break;
+    case RK_FORMAT_RGB_888:
+    case RK_FORMAT_BGR_888:
+      pixel_stride = 3;
+      break;
+    case RK_FORMAT_RGBA_5551:
+    case RK_FORMAT_RGB_565:
+      pixel_stride = 2;
+      break;
+    case RK_FORMAT_YCbCr_420_SP_10B:
+    case RK_FORMAT_YCbCr_422_SP:
+    case RK_FORMAT_YCrCb_422_SP:
+    case RK_FORMAT_YCbCr_422_P:
+    case RK_FORMAT_YCrCb_422_P:
+    case RK_FORMAT_YCbCr_420_SP:
+    case RK_FORMAT_YCrCb_420_SP:
+    case RK_FORMAT_YCbCr_420_P:
+    case RK_FORMAT_YCrCb_420_P:
+      pixel_stride = 1;
+
+      /* RGA requires yuv image rect align to 2 */
+      width &= ~1;
+      height &= ~1;
+      break;
+    default:
+      return FALSE;
   }
+
+  if (info->fd < 0 && !info->virAddr) return FALSE;
+
+  if (hstride / pixel_stride >= width) hstride /= pixel_stride;
+
+  info->mmuFlag = 1;
+  rga_set_rect(&info->rect, 0, 0, width, height, hstride, vstride, format);
+  return TRUE;
 }
 
-void gst_rgavideoconvert_dispose(GObject *object) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(object);
+static gboolean gst_rga_info_from_video_frame(rga_info_t *info,
+                                              GstVideoFrame *frame,
+                                              GstMapInfo *mapInfo,
+                                              GstMapFlags mapFlag) {
+  RgaSURF_FORMAT rga_format =
+      gst_gst_format_to_rga_format(GST_VIDEO_FRAME_FORMAT(frame));
 
-  GST_DEBUG_OBJECT(rgavideoconvert, "dispose");
+  guint width = GST_VIDEO_FRAME_WIDTH(frame);
+  guint height = GST_VIDEO_FRAME_HEIGHT(frame);
+  guint hstride = GST_VIDEO_FRAME_PLANE_STRIDE(frame, 0);
+  guint vstride = GST_VIDEO_FRAME_N_PLANES(frame) == 1
+                      ? GST_VIDEO_INFO_HEIGHT(&frame->info)
+                      : GST_VIDEO_INFO_PLANE_OFFSET(&frame->info, 1) / hstride;
 
-  /* clean up as possible.  may be called multiple times */
+  if (!gst_set_rga_info(info, rga_format, width, height, hstride, vstride)) {
+    return FALSE;
+  }
+  GstBuffer *inbuf = frame->buffer;
+  if (gst_buffer_n_memory(inbuf) == 1) {
+    GstMemory *mem = gst_buffer_peek_memory(inbuf, 0);
+    gsize offset;
 
-  G_OBJECT_CLASS(gst_rgavideoconvert_parent_class)->dispose(object);
+    if (gst_is_dmabuf_memory(mem)) {
+      gst_memory_get_sizes(mem, &offset, NULL);
+      if (!offset) info->fd = gst_dmabuf_memory_get_fd(mem);
+    }
+  }
+
+  if (info->fd <= 0) {
+    gst_buffer_map(inbuf, mapInfo, mapFlag);
+    info->virAddr = mapInfo->data;
+  }
+  return TRUE;
 }
 
-void gst_rgavideoconvert_finalize(GObject *object) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(object);
+static GstCaps *gst_rga_video_convert_transform_caps(GstBaseTransform *trans,
+                                                     GstPadDirection direction,
+                                                     GstCaps *caps,
+                                                     GstCaps *filter) {
+  GST_DEBUG_OBJECT(trans,
+                   "transform direction %s : caps=%" GST_PTR_FORMAT
+                   "    filter=%" GST_PTR_FORMAT,
+                   direction == GST_PAD_SINK ? "sink" : "src", caps, filter);
 
-  GST_DEBUG_OBJECT(rgavideoconvert, "finalize");
+  GstCaps *ret;
+  GstStructure *structure;
+  GstCapsFeatures *features;
+  gint i, n;
 
-  /* clean up object here */
+  ret = gst_caps_new_empty();
+  n = gst_caps_get_size(caps);
+  for (i = 0; i < n; i++) {
+    structure = gst_caps_get_structure(caps, i);
+    features = gst_caps_get_features(caps, i);
 
-  G_OBJECT_CLASS(gst_rgavideoconvert_parent_class)->finalize(object);
-}
+    /* If this is already expressed by the existing caps
+     * skip this structure */
+    if (i > 0 && gst_caps_is_subset_structure_full(ret, structure, features))
+      continue;
 
-static GstCaps *gst_rgavideoconvert_transform_caps(GstBaseTransform *trans,
-                                                   GstPadDirection direction,
-                                                   GstCaps *caps,
-                                                   GstCaps *filter) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(trans);
-  GstCaps *othercaps;
+    /* make copy */
+    structure = gst_structure_copy(structure);
 
-  GST_DEBUG_OBJECT(rgavideoconvert, "transform_caps");
+    if (direction == GST_PAD_SRC) {
+      // rga 输出最大 4096
+      gst_structure_set(structure, "width", GST_TYPE_INT_RANGE, 1, 4096,
+                        "height", GST_TYPE_INT_RANGE, 1, 4096, NULL);
+    } else {
+      // 输入最大 8192
+      gst_structure_set(structure, "width", GST_TYPE_INT_RANGE, 1, 8192,
+                        "height", GST_TYPE_INT_RANGE, 1, 8192, NULL);
+    }
+    if (!gst_caps_features_is_any(features)) {
+      gst_structure_remove_fields(structure, "format", "colorimetry",
+                                  "chroma-site", NULL);
+    }
 
-  othercaps = gst_caps_copy(caps);
-
-  /* Copy other caps and modify as appropriate */
-  /* This works for the simplest cases, where the transform modifies one
-   * or more fields in the caps structure.  It does not work correctly
-   * if passthrough caps are preferred. */
-  if (direction == GST_PAD_SRC) {
-    /* transform caps going upstream */
-  } else {
-    /* transform caps going downstream */
+    gst_caps_append_structure_full(ret, structure,
+                                   gst_caps_features_copy(features));
   }
 
   if (filter) {
-    GstCaps *intersect;
+    GstCaps *intersection;
 
-    intersect = gst_caps_intersect(othercaps, filter);
-    gst_caps_unref(othercaps);
-
-    return intersect;
-  } else {
-    return othercaps;
+    intersection =
+        gst_caps_intersect_full(filter, ret, GST_CAPS_INTERSECT_FIRST);
+    gst_caps_unref(ret);
+    ret = intersection;
   }
+
+  GST_DEBUG_OBJECT(trans, "returning caps: %" GST_PTR_FORMAT, ret);
+
+  return ret;
 }
 
-static GstCaps *gst_rgavideoconvert_fixate_caps(GstBaseTransform *trans,
-                                                GstPadDirection direction,
-                                                GstCaps *caps,
-                                                GstCaps *othercaps) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(trans);
+static void gst_rga_video_convert_init(GstRgaVideoConvert *rgavideoconvert) {}
 
-  GST_DEBUG_OBJECT(rgavideoconvert, "fixate_caps");
-
-  return NULL;
-}
-
-static gboolean gst_rgavideoconvert_accept_caps(GstBaseTransform *trans,
-                                                GstPadDirection direction,
-                                                GstCaps *caps) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(trans);
-
-  GST_DEBUG_OBJECT(rgavideoconvert, "accept_caps");
-
-  return TRUE;
-}
-
-static gboolean gst_rgavideoconvert_set_caps(GstBaseTransform *trans,
-                                             GstCaps *incaps,
-                                             GstCaps *outcaps) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(trans);
-
-  GST_DEBUG_OBJECT(rgavideoconvert, "set_caps");
-
-  return TRUE;
-}
-
-static gboolean gst_rgavideoconvert_query(GstBaseTransform *trans,
-                                          GstPadDirection direction,
-                                          GstQuery *query) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(trans);
-
-  GST_DEBUG_OBJECT(rgavideoconvert, "query");
-
-  return TRUE;
-}
-
-/* decide allocation query for output buffers */
-static gboolean gst_rgavideoconvert_decide_allocation(GstBaseTransform *trans,
-                                                      GstQuery *query) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(trans);
-
-  GST_DEBUG_OBJECT(rgavideoconvert, "decide_allocation");
-
-  return TRUE;
-}
-
-static gboolean gst_rgavideoconvert_filter_meta(GstBaseTransform *trans,
-                                                GstQuery *query, GType api,
-                                                const GstStructure *params) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(trans);
-
-  GST_DEBUG_OBJECT(rgavideoconvert, "filter_meta");
-
-  return TRUE;
-}
-
-/* propose allocation query parameters for input buffers */
-static gboolean gst_rgavideoconvert_propose_allocation(GstBaseTransform *trans,
-                                                       GstQuery *decide_query,
-                                                       GstQuery *query) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(trans);
-
-  GST_DEBUG_OBJECT(rgavideoconvert, "propose_allocation");
-
-  return TRUE;
-}
-
-/* transform size */
-static gboolean gst_rgavideoconvert_transform_size(GstBaseTransform *trans,
-                                                   GstPadDirection direction,
-                                                   GstCaps *caps, gsize size,
-                                                   GstCaps *othercaps,
-                                                   gsize *othersize) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(trans);
-
-  GST_DEBUG_OBJECT(rgavideoconvert, "transform_size");
-
-  return TRUE;
-}
-
-static gboolean gst_rgavideoconvert_get_unit_size(GstBaseTransform *trans,
-                                                  GstCaps *caps, gsize *size) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(trans);
-
-  GST_DEBUG_OBJECT(rgavideoconvert, "get_unit_size");
-
-  return TRUE;
-}
-
-/* states */
-static gboolean gst_rgavideoconvert_start(GstBaseTransform *trans) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(trans);
+static gboolean gst_rga_video_convert_start(GstBaseTransform *trans) {
+  GstRgaVideoConvert *rgavideoconvert = gst_rga_video_convert(trans);
 
   GST_DEBUG_OBJECT(rgavideoconvert, "start");
-
+  c_RkRgaInit();
   return TRUE;
 }
 
-static gboolean gst_rgavideoconvert_stop(GstBaseTransform *trans) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(trans);
+static gboolean gst_rga_video_convert_stop(GstBaseTransform *trans) {
+  GstRgaVideoConvert *rgavideoconvert = gst_rga_video_convert(trans);
 
   GST_DEBUG_OBJECT(rgavideoconvert, "stop");
-
+  c_RkRgaDeInit();
   return TRUE;
 }
 
-/* sink and src pad event handlers */
-static gboolean gst_rgavideoconvert_sink_event(GstBaseTransform *trans,
-                                               GstEvent *event) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(trans);
+static gboolean gst_rga_video_convert_set_info(GstVideoFilter *filter,
+                                               GstCaps *incaps,
+                                               GstVideoInfo *in_info,
+                                               GstCaps *outcaps,
+                                               GstVideoInfo *out_info) {
+  GstRgaVideoConvert *rgavideoconvert = gst_rga_video_convert(filter);
+  GST_DEBUG_OBJECT(rgavideoconvert, "set_info");
 
-  GST_DEBUG_OBJECT(rgavideoconvert, "sink_event");
+  GstVideoFormat in_format = GST_VIDEO_INFO_FORMAT(in_info);
+  GstVideoFormat out_format = GST_VIDEO_INFO_FORMAT(out_info);
 
-  return GST_BASE_TRANSFORM_CLASS(gst_rgavideoconvert_parent_class)
-      ->sink_event(trans, event);
-}
-
-static gboolean gst_rgavideoconvert_src_event(GstBaseTransform *trans,
-                                              GstEvent *event) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(trans);
-
-  GST_DEBUG_OBJECT(rgavideoconvert, "src_event");
-
-  return GST_BASE_TRANSFORM_CLASS(gst_rgavideoconvert_parent_class)
-      ->src_event(trans, event);
-}
-
-static GstFlowReturn gst_rgavideoconvert_prepare_output_buffer(
-    GstBaseTransform *trans, GstBuffer *input, GstBuffer **outbuf) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(trans);
-
-  GST_DEBUG_OBJECT(rgavideoconvert, "prepare_output_buffer");
-
-  return GST_FLOW_OK;
-}
-
-/* metadata */
-static gboolean gst_rgavideoconvert_copy_metadata(GstBaseTransform *trans,
-                                                  GstBuffer *input,
-                                                  GstBuffer *outbuf) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(trans);
-
-  GST_DEBUG_OBJECT(rgavideoconvert, "copy_metadata");
-
+  if (gst_gst_format_to_rga_format(in_format) == RK_FORMAT_UNKNOWN ||
+      gst_gst_format_to_rga_format(in_format) == RK_FORMAT_UNKNOWN) {
+    GST_INFO_OBJECT(filter, "don't support format. in format=%d,out format=%d",
+                    in_format, out_format);
+    return FALSE;
+  }
   return TRUE;
-}
-
-static gboolean gst_rgavideoconvert_transform_meta(GstBaseTransform *trans,
-                                                   GstBuffer *outbuf,
-                                                   GstMeta *meta,
-                                                   GstBuffer *inbuf) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(trans);
-
-  GST_DEBUG_OBJECT(rgavideoconvert, "transform_meta");
-
-  return TRUE;
-}
-
-static void gst_rgavideoconvert_before_transform(GstBaseTransform *trans,
-                                                 GstBuffer *buffer) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(trans);
-
-  GST_DEBUG_OBJECT(rgavideoconvert, "before_transform");
 }
 
 /* transform */
-static GstFlowReturn gst_rgavideoconvert_transform(GstBaseTransform *trans,
-                                                   GstBuffer *inbuf,
-                                                   GstBuffer *outbuf) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(trans);
+static GstFlowReturn gst_rga_video_convert_transform_frame(
+    GstVideoFilter *filter, GstVideoFrame *inframe, GstVideoFrame *outframe) {
+  GstRgaVideoConvert *rgavideoconvert = gst_rga_video_convert(filter);
 
-  GST_DEBUG_OBJECT(rgavideoconvert, "transform");
+  GST_DEBUG_OBJECT(rgavideoconvert, "transform_frame");
 
-  return GST_FLOW_OK;
-}
+  GstMapInfo inMapinfo = {
+      0,
+  };
+  GstMapInfo outMapinfo = {
+      0,
+  };
 
-static GstFlowReturn gst_rgavideoconvert_transform_ip(GstBaseTransform *trans,
-                                                      GstBuffer *buf) {
-  GstRgavideoconvert *rgavideoconvert = GST_RGAVIDEOCONVERT(trans);
+  rga_info_t src_info = {
+      0,
+  };
+  rga_info_t dst_info = {
+      0,
+  };
 
-  GST_DEBUG_OBJECT(rgavideoconvert, "transform_ip");
+  if (!gst_rga_info_from_video_frame(&src_info, inframe, &inMapinfo,
+                                     GST_MAP_READ))
+    return GST_FLOW_ERROR;
+
+  if (!gst_rga_info_from_video_frame(&dst_info, outframe, &outMapinfo,
+                                     GST_MAP_WRITE))
+    return GST_FLOW_ERROR;
+
+  gboolean ret = TRUE;
+  if (c_RkRgaBlit(&src_info, &dst_info, NULL) < 0) {
+    GST_WARNING_OBJECT(filter, "failed to blit");
+    ret = FALSE;
+  }
+
+  gst_buffer_unmap(inframe->buffer, &inMapinfo);
+  gst_buffer_unmap(outframe->buffer, &outMapinfo);
+
+  if (!ret) {
+    return GST_FLOW_ERROR;
+  }
 
   return GST_FLOW_OK;
 }
 
 static gboolean plugin_init(GstPlugin *plugin) {
   /* FIXME Remember to set the rank if it's an element that is meant
-     to be autoplugged by decodebin. */
-  return gst_element_register(plugin, "rgavideoconvert", GST_RANK_NONE,
-                              GST_TYPE_RGAVIDEOCONVERT);
+   to be autoplugged by decodebin. */
+  return gst_element_register(plugin, "rgavideoconvert", GST_RANK_PRIMARY,
+                              GST_TYPE_RGA_CONVERT);
 }
 
-/* FIXME: these are normally defined by the GStreamer build system.
-   If you are creating an element to be included in gst-plugins-*,
-   remove these, as they're always defined.  Otherwise, edit as
-   appropriate for your external plugin package. */
 #ifndef VERSION
-#define VERSION "0.0.FIXME"
+#define VERSION "1.0.0"
 #endif
 #ifndef PACKAGE
-#define PACKAGE "FIXME_package"
+#define PACKAGE "gstreamer-rga"
 #endif
 #ifndef PACKAGE_NAME
-#define PACKAGE_NAME "FIXME_package_name"
+#define PACKAGE_NAME "gstreamer-rga"
 #endif
 #ifndef GST_PACKAGE_ORIGIN
-#define GST_PACKAGE_ORIGIN "http://FIXME.org/"
+#define GST_PACKAGE_ORIGIN "https://github.com/corenel/gstreamer-rga.git"
 #endif
 
 GST_PLUGIN_DEFINE(GST_VERSION_MAJOR, GST_VERSION_MINOR, rgavideoconvert,
-                  "FIXME plugin description", plugin_init, VERSION, "LGPL",
-                  PACKAGE_NAME, GST_PACKAGE_ORIGIN)
+                  "video Colorspace conversion & scaler", plugin_init, VERSION,
+                  "MIT", PACKAGE_NAME, GST_PACKAGE_ORIGIN)

@@ -1,5 +1,5 @@
 /* GStreamer
- * Copyright (C) 2025 FIXME <fixme@example.com>
+ * Copyright (C) 2021 FIXME <fixme@example.com>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -20,34 +20,34 @@
 #ifndef PLUGINS_GSTRGAVIDEOCONVERT_H_
 #define PLUGINS_GSTRGAVIDEOCONVERT_H_
 
-#include <gst/base/gstbasetransform.h>
+#include <gst/video/gstvideofilter.h>
+#include <gst/video/video.h>
 
 G_BEGIN_DECLS
 
-#define GST_TYPE_RGAVIDEOCONVERT (gst_rgavideoconvert_get_type())
-#define GST_RGAVIDEOCONVERT(obj)                               \
-  (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_RGAVIDEOCONVERT, \
-                              GstRgavideoconvert))
-#define GST_RGAVIDEOCONVERT_CLASS(klass)                      \
-  (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_RGAVIDEOCONVERT, \
-                           GstRgavideoconvertClass))
-#define GST_IS_RGAVIDEOCONVERT(obj) \
-  (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_RGAVIDEOCONVERT))
-#define GST_IS_RGAVIDEOCONVERT_CLASS(obj) \
-  (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_RGAVIDEOCONVERT))
+#define GST_TYPE_RGA_CONVERT (gst_rga_video_convert_get_type())
+#define gst_rga_video_convert(obj) \
+  (G_TYPE_CHECK_INSTANCE_CAST((obj), GST_TYPE_RGA_CONVERT, GstRgaVideoConvert))
+#define gst_rga_video_convert_CLASS(klass)                \
+  (G_TYPE_CHECK_CLASS_CAST((klass), GST_TYPE_RGA_CONVERT, \
+                           GstRgaVideoConvertClass))
+#define GST_IS_RGA_CONVERT(obj) \
+  (G_TYPE_CHECK_INSTANCE_TYPE((obj), GST_TYPE_RGA_CONVERT))
+#define GST_IS_RGA_CONVERT_CLASS(obj) \
+  (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_RGA_CONVERT))
 
-typedef struct _GstRgavideoconvert GstRgavideoconvert;
-typedef struct _GstRgavideoconvertClass GstRgavideoconvertClass;
+typedef struct _GstRgaVideoConvert GstRgaVideoConvert;
+typedef struct _GstRgaVideoConvertClass GstRgaVideoConvertClass;
 
-struct _GstRgavideoconvert {
-  GstBaseTransform base_rgavideoconvert;
+struct _GstRgaVideoConvert {
+  GstVideoFilter base_rgavideoconvert;
 };
 
-struct _GstRgavideoconvertClass {
-  GstBaseTransformClass base_rgavideoconvert_class;
+struct _GstRgaVideoConvertClass {
+  GstVideoFilterClass base_rgavideoconvert_class;
 };
 
-GType gst_rgavideoconvert_get_type(void);
+GType gst_rga_video_convert_get_type(void);
 
 G_END_DECLS
 
