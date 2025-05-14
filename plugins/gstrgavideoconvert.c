@@ -43,6 +43,7 @@
 
 #include "gstrgavideoconvert.h"  // NOLINT
 #include "rga/RgaApi.h"
+#include "rga/im2d.h"
 
 GST_DEBUG_CATEGORY_STATIC(gst_rga_video_convert_debug_category);
 #define GST_CAT_DEFAULT gst_rga_video_convert_debug_category
@@ -310,6 +311,9 @@ static gboolean gst_rga_video_convert_start(GstBaseTransform *trans) {
 
   GST_DEBUG_OBJECT(rgavideoconvert, "start");
   c_RkRgaInit();
+  // Only use RGA3_CORE0 and RGA3_CORE1 (i.e. ignore RGA2 to avoid DMA32 issues)
+  imconfig(IM_CONFIG_SCHEDULER_CORE,
+           IM_SCHEDULER_RGA3_CORE0 | IM_SCHEDULER_RGA3_CORE1);
   return TRUE;
 }
 
@@ -371,6 +375,9 @@ static GstFlowReturn gst_rga_video_convert_transform_frame(
     return GST_FLOW_ERROR;
 
   gboolean ret = TRUE;
+  // Only use RGA3_CORE0 and RGA3_CORE1 (i.e. ignore RGA2 to avoid DMA32 issues)
+  src_info.core = dst_info.core =
+      IM_SCHEDULER_RGA3_CORE0 | IM_SCHEDULER_RGA3_CORE1;
   if (c_RkRgaBlit(&src_info, &dst_info, NULL) < 0) {
     GST_WARNING_OBJECT(filter, "failed to blit");
     ret = FALSE;
