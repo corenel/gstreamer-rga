@@ -30,3 +30,36 @@
 *.exe
 *.out
 *.app
+
+# IDE and editor files
+.idea/
+.vscode/
+*.code-workspace
+
+# Build artifacts and directories
+.tags
+*.tar
+cmake-build-*
+build/
+build_*/
+devel/
+install/
+install_*/
+.catkin_workspace
+CATKIN_IGNORE
+COLCON_IGNORE
+
+# Log files
+log/*
+!log/.gitkeep
+
+# Python artifacts
+__pycache__
+*.egg-info/
+.cache
+*.pyc
+.ruff_cache
+.pdm-python
+
+# System files
+.DS_Store
